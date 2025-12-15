@@ -7,6 +7,7 @@ use App\Models\Registration;
 use App\Services\RegistrationService;
 use App\Services\TelegramService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Facades\Excel;
@@ -86,6 +87,22 @@ class TelegramController extends Controller
 
             // Check if admin command
             if ($this->isAdmin($chatId)) {
+                // If admin is in broadcast mode and message is not a command, broadcast payload
+                if ($this->isInBroadcastMode($chatId) && !$this->isAdminCommand($text)) {
+                    $this->broadcastPayload($chatId, $message);
+                    return response()->json(['ok' => true]);
+                }
+
+                if (str_starts_with($text, '/broadcast')) {
+                    $this->startBroadcastMode($chatId, $text);
+                    return response()->json(['ok' => true]);
+                }
+
+                if ($text === '/cancel' && $this->isInBroadcastMode($chatId)) {
+                    Cache::forget($this->broadcastCacheKey($chatId));
+                    $this->telegramService->sendMessage($chatId, "Broadcast bekor qilindi.");
+                    return response()->json(['ok' => true]);
+                }
                 $this->handleAdminCommand($chatId, $text);
                 return response()->json(['ok' => true]);
             }
@@ -407,7 +424,7 @@ class TelegramController extends Controller
             default:
                 $this->telegramService->sendMessage(
                     $chatId,
-                    "Admin buyruqlari:\n/admin - Admin menyu\n/export - Excel fayl yuklab olish"
+                    "Admin buyruqlari:\n/admin - Admin menyu\n/export - Excel fayl yuklab olish\n/broadcast [xabar] - Obunachilarga xabar yuborish"
                 );
         }
     }
@@ -424,7 +441,8 @@ class TelegramController extends Controller
         $message .= "Jami ro'yxatdan o'tganlar: {$totalRegistrations}\n";
         $message .= "Kutilayotganlar: {$pendingRegistrations}\n\n";
         $message .= "Buyruqlar:\n";
-        $message .= "/export - Excel fayl yuklab olish";
+        $message .= "/export - Excel fayl yuklab olish\n";
+        $message .= "/broadcast [xabar] - Obunachilarga xabar yuborish";
 
         $this->telegramService->sendMessage($chatId, $message);
     }
@@ -461,6 +479,102 @@ class TelegramController extends Controller
     public function export(): BinaryFileResponse
     {
         return Excel::download(new RegistrationsExport, 'registrations.xlsx');
+    }
+
+    /**
+     * Start broadcast mode with optional immediate text
+     */
+    private function startBroadcastMode(int $chatId, string $text): void
+    {
+        $payload = trim(str_replace('/broadcast', '', $text));
+
+        // mark admin in broadcast mode
+        Cache::put($this->broadcastCacheKey($chatId), true, now()->addMinutes(10));
+
+        if ($payload !== '') {
+            // if message included, send immediately and exit mode
+            $this->broadcastText($chatId, $payload);
+            Cache::forget($this->broadcastCacheKey($chatId));
+            return;
+        }
+
+        $this->telegramService->sendMessage(
+            $chatId,
+            "Broadcast rejimi faollashdi. Xabarni (matn, rasm, video, havola) yuboring. Bekor qilish uchun /cancel"
+        );
+    }
+
+    /**
+     * Broadcast incoming payload (text or any other message) to all subscribers
+     */
+    private function broadcastPayload(int $adminChatId, array $message): void
+    {
+        $targets = $this->broadcastTargets();
+        if (empty($targets)) {
+            $this->telegramService->sendMessage($adminChatId, "Obunachilar topilmadi.");
+            Cache::forget($this->broadcastCacheKey($adminChatId));
+            return;
+        }
+
+        $hasText = isset($message['text']) && $message['text'] !== '';
+        $messageId = $message['message_id'] ?? null;
+        $sent = 0;
+
+        foreach ($targets as $targetChatId) {
+            if ($hasText) {
+                $this->telegramService->sendMessage((int) $targetChatId, $message['text']);
+            } elseif ($messageId) {
+                // Copy any media/attachment while keeping captions
+                $this->telegramService->copyMessage($adminChatId, $messageId, (int) $targetChatId);
+            }
+            $sent++;
+        }
+
+        Cache::forget($this->broadcastCacheKey($adminChatId));
+        $this->telegramService->sendMessage($adminChatId, "Yuborildi: {$sent} ta obunachiga.");
+    }
+
+    /**
+     * Broadcast plain text helper
+     */
+    private function broadcastText(int $chatId, string $payload): void
+    {
+        $targets = $this->broadcastTargets();
+        if (empty($targets)) {
+            $this->telegramService->sendMessage($chatId, "Obunachilar topilmadi.");
+            return;
+        }
+
+        $sent = 0;
+        foreach ($targets as $targetChatId) {
+            $this->telegramService->sendMessage((int) $targetChatId, $payload);
+            $sent++;
+        }
+
+        $this->telegramService->sendMessage($chatId, "Yuborildi: {$sent} ta obunachiga.");
+    }
+
+    private function broadcastTargets(): array
+    {
+        return Registration::where('is_subscribed', true)
+            ->whereNotNull('chat_id')
+            ->pluck('chat_id')
+            ->toArray();
+    }
+
+    private function broadcastCacheKey(int $chatId): string
+    {
+        return "broadcast_mode:{$chatId}";
+    }
+
+    private function isInBroadcastMode(int $chatId): bool
+    {
+        return Cache::has($this->broadcastCacheKey($chatId));
+    }
+
+    private function isAdminCommand(string $text): bool
+    {
+        return str_starts_with($text, '/');
     }
 
     /**

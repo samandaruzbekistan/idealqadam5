@@ -107,5 +107,24 @@ class TelegramService
             return ['ok' => false, 'error' => $e->getMessage()];
         }
     }
+
+    /**
+     * Copy any message (text/media) from one chat to another
+     */
+    public function copyMessage(int $fromChatId, int $messageId, int $targetChatId): array
+    {
+        try {
+            $response = Http::post("{$this->apiUrl}/copyMessage", [
+                'chat_id' => $targetChatId,
+                'from_chat_id' => $fromChatId,
+                'message_id' => $messageId,
+            ]);
+
+            return $response->json();
+        } catch (\Exception $e) {
+            Log::error('Telegram copyMessage error: ' . $e->getMessage());
+            return ['ok' => false, 'error' => $e->getMessage()];
+        }
+    }
 }
 
