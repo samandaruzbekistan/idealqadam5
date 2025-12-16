@@ -85,6 +85,18 @@ class TelegramController extends Controller
             $chatId = $message['chat']['id'];
             $text = $message['text'] ?? '';
 
+            // Handle /restart command
+            if ($text === '/restart') {
+                $registration = $this->registrationService->getOrCreateRegistration($chatId);
+                $this->registrationService->resetRegistration($registration);
+                $this->registrationService->updateState($registration, 'full_name');
+                $this->telegramService->sendMessage(
+                    $chatId,
+                    'Yangi ro\'yxatdan o\'tish boshlandi.\n\nIsm va familiyangizni kiriting'
+                );
+                return response()->json(['ok' => true]);
+            }
+
             // Check if admin command
             if ($this->isAdmin($chatId)) {
                 // If admin is in broadcast mode and message is not a command, broadcast payload
@@ -151,11 +163,44 @@ class TelegramController extends Controller
                 $this->handleSubscription($registration, $text, $message);
                 break;
 
+            case 'completed':
+                $this->handleCompleted($registration, $text, $message);
+                break;
+
             default:
                 $this->telegramService->sendMessage(
                     $chatId,
                     'Xatolik yuz berdi. /start buyrug\'ini bosing.'
                 );
+        }
+    }
+
+    private function handleCompleted(Registration $registration, string $text, array $message): void
+    {
+        if ($text === '/restart') {
+            $this->registrationService->resetRegistration($registration);
+            $this->registrationService->updateState($registration, 'full_name');
+            $this->telegramService->sendMessage(
+                $registration->chat_id,
+                'Yangi ro\'yxatdan o\'tish boshlandi.\n\nIsm va familiyangizni kiriting'
+            );
+        }
+        if ($text === '/start') {
+            $message = "Siz allaqachon ro'yxatdan o'tgansiz!\n\n";
+            $message .= "Ism: {$registration->full_name}\n";
+            $message .= "Maktab: {$registration->school}\n";
+            $message .= "Sinf: {$registration->grade}\n";
+            $message .= "Fanlar: {$registration->subjects}\n\n";
+            $message .= "Qayta ro'yxatdan o'tish uchun /restart buyrug'ini bosing.";
+            $this->telegramService->sendMessage(
+                $registration->chat_id,
+                $message);
+        }
+        else {
+            $this->telegramService->sendMessage(
+                $registration->chat_id,
+                'Xatolik yuz berdi. /start buyrug\'ini bosing.'
+            );
         }
     }
 
@@ -165,6 +210,23 @@ class TelegramController extends Controller
     private function handleStart(Registration $registration, string $text): void
     {
         if ($text === '/start') {
+            // Check if user is already registered
+            if ($registration->is_subscribed && $registration->state === 'completed') {
+                $message = "Siz allaqachon ro'yxatdan o'tgansiz!\n\n";
+                $message .= "Ism: {$registration->full_name}\n";
+                $message .= "Maktab: {$registration->school}\n";
+                $message .= "Sinf: {$registration->grade}\n";
+                $message .= "Fanlar: {$registration->subjects}\n\n";
+                $message .= "Qayta ro'yxatdan o'tish uchun /restart buyrug'ini bosing.";
+
+                $this->telegramService->sendMessage(
+                    $registration->chat_id,
+                    $message
+                );
+                return;
+            }
+
+            // Start new registration
             $this->registrationService->updateState($registration, 'full_name');
             $this->telegramService->sendMessage(
                 $registration->chat_id,
@@ -302,7 +364,7 @@ class TelegramController extends Controller
         $instagramLink = config('telegram.instagram_link', '');
         $youtubeLink = config('telegram.youtube_link', '');
 
-        $message = "Ro'yxatdan o'tishni yakunlash uchun quyidagi kanallarga obuna bo'ling:\n\n";
+        $message = "Ro'yxatdan o'tishni yakunlash uchun quyidagi kanallarga obuna bo'ling:\n\n@ideal_study_ntm\n\n";
 
 
         $message .= "\nObuna bo'lgach, 'Tekshirish' tugmasini bosing.";
@@ -312,7 +374,7 @@ class TelegramController extends Controller
             $buttons[] = [
                 [
                     'text' => "Telegram kanalga o'tish",
-                    'url' => "https://t.me/{$channelUsername}",
+                    'url' => "https://t.me/ideal_study_ntm",
                 ],
             ];
         }
@@ -384,17 +446,20 @@ class TelegramController extends Controller
                     "Qo'shimcha ma'lumotlar keyinroq yuboriladi."
                 );
             } else {
+                $inlineKeyboard = $this->telegramService->createInlineKeyboard([
+                    [
+                        [
+                            'text' => 'Tekshirish',
+                            'callback_data' => 'check_subscription',
+                        ],
+                    ],
+                ]);
                 $this->telegramService->sendMessage(
                     $registration->chat_id,
-                    "❌ Siz hali Telegram kanalga obuna bo'lmadingiz.\n\n" .
-                    "Iltimos, @" . $channelUsername . " kanaliga obuna bo'ling va yana 'Tekshirish' tugmasini bosing."
+                    "❌ Siz hali Telegram kanalga obuna bo'lmadingiz.\n\nIltimos, @ideal_study_ntm kanaliga obuna bo'ling va yana 'Tekshirish' tugmasini bosing.",
+                    $inlineKeyboard
                 );
             }
-        } else {
-            $this->telegramService->sendMessage(
-                $registration->chat_id,
-                "Iltimos, obuna bo'lgach 'Tekshirish' tugmasini bosing."
-            );
         }
     }
 

@@ -140,5 +140,20 @@ class RegistrationService
         $availableSubjects = $this->getSubjectsByGrade($grade);
         return in_array($subject, $availableSubjects);
     }
+
+    /**
+     * Reset registration to start new registration
+     */
+    public function resetRegistration(Registration $registration): void
+    {
+        $registration->update([
+            'full_name' => null,
+            'school' => null,
+            'grade' => null,
+            'subjects' => null,
+            'is_subscribed' => false,
+            'state' => 'start',
+        ]);
+    }
 }
 
