@@ -105,14 +105,30 @@ class TelegramController extends Controller
                     return response()->json(['ok' => true]);
                 }
 
+                // If admin is in forward mode and message is forwarded, forward to subscribers
+                if ($this->isInForwardMode($chatId) && isset($message['forward_from_chat'])) {
+                    $this->forwardToSubscribers($chatId, $message);
+                    return response()->json(['ok' => true]);
+                }
+
                 if (str_starts_with($text, '/broadcast')) {
                     $this->startBroadcastMode($chatId, $text);
                     return response()->json(['ok' => true]);
                 }
 
-                if ($text === '/cancel' && $this->isInBroadcastMode($chatId)) {
-                    Cache::forget($this->broadcastCacheKey($chatId));
-                    $this->telegramService->sendMessage($chatId, "Broadcast bekor qilindi.");
+                if (str_starts_with($text, '/forward')) {
+                    $this->startForwardMode($chatId, $text);
+                    return response()->json(['ok' => true]);
+                }
+
+                if ($text === '/cancel') {
+                    if ($this->isInBroadcastMode($chatId)) {
+                        Cache::forget($this->broadcastCacheKey($chatId));
+                        $this->telegramService->sendMessage($chatId, "Broadcast bekor qilindi.");
+                    } elseif ($this->isInForwardMode($chatId)) {
+                        Cache::forget($this->forwardCacheKey($chatId));
+                        $this->telegramService->sendMessage($chatId, "Forward bekor qilindi.");
+                    }
                     return response()->json(['ok' => true]);
                 }
                 $this->handleAdminCommand($chatId, $text);
@@ -493,7 +509,7 @@ class TelegramController extends Controller
             default:
                 $this->telegramService->sendMessage(
                     $chatId,
-                    "Admin buyruqlari:\n/admin - Admin menyu\n/stat - Statistika\n/export - Excel fayl yuklab olish\n/broadcast [xabar] - Obunachilarga xabar yuborish"
+                    "Admin buyruqlari:\n/admin - Admin menyu\n/stat - Statistika\n/export - Excel fayl yuklab olish\n/broadcast [xabar] - Obunachilarga xabar yuborish\n/forward - Kanal postini forward qilish"
                 );
         }
     }
@@ -512,7 +528,8 @@ class TelegramController extends Controller
         $message .= "Buyruqlar:\n";
         $message .= "/stat - To'liq statistika\n";
         $message .= "/export - Excel fayl yuklab olish\n";
-        $message .= "/broadcast [xabar] - Obunachilarga xabar yuborish";
+        $message .= "/broadcast [xabar] - Obunachilarga xabar yuborish\n";
+        $message .= "/forward - Kanal postini forward qilish";
 
         $this->telegramService->sendMessage($chatId, $message);
     }
@@ -680,22 +697,64 @@ class TelegramController extends Controller
             return;
         }
 
+        $total = count($targets);
+        $this->telegramService->sendMessage($adminChatId, "📤 {$total} ta obunachiga yuborilmoqda...");
+
         $hasText = isset($message['text']) && $message['text'] !== '';
         $messageId = $message['message_id'] ?? null;
-        $sent = 0;
+        $caption = $message['caption'] ?? null;
+        $parseMode = $message['entities'] ?? null ? 'HTML' : null; // Formatlangan text bor bo'lsa
 
-        foreach ($targets as $targetChatId) {
-            if ($hasText) {
-                $this->telegramService->sendMessage((int) $targetChatId, $message['text']);
-            } elseif ($messageId) {
-                // Copy any media/attachment while keeping captions
-                $this->telegramService->copyMessage($adminChatId, $messageId, (int) $targetChatId);
+        // Agar caption bor bo'lsa, parse_mode ni aniqlash
+        if ($caption && isset($message['caption_entities'])) {
+            $parseMode = 'HTML';
+        }
+
+        $sent = 0;
+        $failed = 0;
+
+        foreach ($targets as $index => $targetChatId) {
+            try {
+                $result = null;
+
+                if ($hasText) {
+                    // Oddiy text xabar
+                    $result = $this->telegramService->sendMessage((int) $targetChatId, $message['text']);
+                } elseif ($messageId) {
+                    // Media xabar (video, photo, document, etc.) - caption bilan birga
+                    // copyMessage caption ni avtomatik saqlaydi va formatlangan text ham saqlanadi
+                    $result = $this->telegramService->copyMessage(
+                        $adminChatId,
+                        $messageId,
+                        (int) $targetChatId,
+                        $parseMode // Parse mode - formatlangan text va linklar saqlanadi
+                    );
+                }
+
+                if (($result['ok'] ?? false) === true) {
+                    $sent++;
+                } else {
+                    $failed++;
+                }
+
+                // Progress har 50 ta xabardan keyin
+                if (($index + 1) % 50 === 0) {
+                    $this->telegramService->sendMessage(
+                        $adminChatId,
+                        "⏳ Progress: " . ($index + 1) . "/{$total} (Yuborildi: {$sent}, Xatolik: {$failed})"
+                    );
+                }
+            } catch (\Exception $e) {
+                $failed++;
+                Log::error("Broadcast error for chat_id {$targetChatId}: " . $e->getMessage());
             }
-            $sent++;
         }
 
         Cache::forget($this->broadcastCacheKey($adminChatId));
-        $this->telegramService->sendMessage($adminChatId, "Yuborildi: {$sent} ta obunachiga.");
+        $this->telegramService->sendMessage(
+            $adminChatId,
+            "✅ Yakunlandi!\n\nYuborildi: {$sent} ta\nXatolik: {$failed} ta\nJami: {$total} ta"
+        );
     }
 
     /**
@@ -739,6 +798,118 @@ class TelegramController extends Controller
     private function isAdminCommand(string $text): bool
     {
         return str_starts_with($text, '/');
+    }
+
+    /**
+     * Start forward mode
+     */
+    private function startForwardMode(int $chatId, string $text): void
+    {
+        // Mark admin in forward mode
+        Cache::put($this->forwardCacheKey($chatId), true, now()->addMinutes(10));
+
+        $this->telegramService->sendMessage(
+            $chatId,
+            "📤 Forward rejimi faollashdi.\n\nKanaldan postni forward qiling. Bot uni barcha ro'yxatdan o'tganlarga forward qiladi.\n\nBekor qilish uchun /cancel"
+        );
+    }
+
+    /**
+     * Forward message to all subscribers
+     */
+    private function forwardToSubscribers(int $adminChatId, array $message): void
+    {
+        // Check if message is forwarded
+        if (!isset($message['forward_from_chat'])) {
+            $this->telegramService->sendMessage($adminChatId, "❌ Bu forward qilingan xabar emas. Kanaldan postni forward qiling.");
+            return;
+        }
+
+        $fromChatId = $message['forward_from_chat']['id'] ?? null;
+        $messageId = $message['message_id'] ?? null;
+
+        if (!$fromChatId || !$messageId) {
+            $this->telegramService->sendMessage($adminChatId, "❌ Xatolik: Forward ma'lumotlari topilmadi.");
+            Cache::forget($this->forwardCacheKey($adminChatId));
+            return;
+        }
+
+        $targets = $this->broadcastTargets();
+        if (empty($targets)) {
+            $this->telegramService->sendMessage($adminChatId, "Obunachilar topilmadi.");
+            Cache::forget($this->forwardCacheKey($adminChatId));
+            return;
+        }
+
+        $total = count($targets);
+        $this->telegramService->sendMessage($adminChatId, "📤 {$total} ta obunachiga forward qilinmoqda...");
+
+        $sent = 0;
+        $failed = 0;
+        $delayMicroseconds = 50000; // 50ms delay to avoid rate limiting
+
+        foreach ($targets as $index => $targetChatId) {
+            try {
+                $result = $this->telegramService->forwardMessage(
+                    $fromChatId,
+                    $messageId,
+                    (int) $targetChatId
+                );
+
+                if (($result['ok'] ?? false) === true) {
+                    $sent++;
+                } else {
+                    $failed++;
+                    // Rate limit error bo'lsa, biroz kutamiz
+                    if (isset($result['error_code']) && $result['error_code'] == 429) {
+                        $retryAfter = $result['parameters']['retry_after'] ?? 1;
+                        sleep($retryAfter);
+                        // Qayta urinib ko'ramiz
+                        $result = $this->telegramService->forwardMessage(
+                            $fromChatId,
+                            $messageId,
+                            (int) $targetChatId
+                        );
+                        if (($result['ok'] ?? false) === true) {
+                            $sent++;
+                            $failed--;
+                        }
+                    }
+                }
+
+                // Progress har 50 ta xabardan keyin
+                if (($index + 1) % 50 === 0) {
+                    $this->telegramService->sendMessage(
+                        $adminChatId,
+                        "⏳ Progress: " . ($index + 1) . "/{$total} (Yuborildi: {$sent}, Xatolik: {$failed})"
+                    );
+                }
+
+                // Delay to avoid rate limiting
+                if ($index < $total - 1) {
+                    usleep($delayMicroseconds);
+                }
+            } catch (\Exception $e) {
+                $failed++;
+                Log::error("Forward error for chat_id {$targetChatId}: " . $e->getMessage());
+            }
+        }
+
+        Cache::forget($this->forwardCacheKey($adminChatId));
+        $this->telegramService->sendMessage(
+            $adminChatId,
+            "✅ Yakunlandi!\n\nForward qilindi: {$sent} ta\nXatolik: {$failed} ta\nJami: {$total} ta"
+        );
+    }
+
+    private function forwardCacheKey(int $chatId): string
+    {
+        return "forward_mode:{$chatId}";
+    }
+
+    private function isInForwardMode(int $chatId): bool
+    {
+        return Cache::has($this->forwardCacheKey($chatId));
     }
 
     /**

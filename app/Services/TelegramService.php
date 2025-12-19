@@ -110,11 +110,38 @@ class TelegramService
 
     /**
      * Copy any message (text/media) from one chat to another
+     * Preserves caption, parse_mode, and formatting
      */
-    public function copyMessage(int $fromChatId, int $messageId, int $targetChatId): array
+    public function copyMessage(int $fromChatId, int $messageId, int $targetChatId, string $parseMode = 'HTML'): array
     {
         try {
-            $response = Http::post("{$this->apiUrl}/copyMessage", [
+            $data = [
+                'chat_id' => $targetChatId,
+                'from_chat_id' => $fromChatId,
+                'message_id' => $messageId,
+            ];
+
+            // Parse mode qo'shish - caption formatlangan bo'lsa saqlanadi
+            if ($parseMode) {
+                $data['parse_mode'] = $parseMode;
+            }
+
+            $response = Http::post("{$this->apiUrl}/copyMessage", $data);
+
+            return $response->json();
+        } catch (\Exception $e) {
+            Log::error('Telegram copyMessage error: ' . $e->getMessage());
+            return ['ok' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Forward message from one chat to another
+     */
+    public function forwardMessage(int $fromChatId, int $messageId, int $targetChatId): array
+    {
+        try {
+            $response = Http::post("{$this->apiUrl}/forwardMessage", [
                 'chat_id' => $targetChatId,
                 'from_chat_id' => $fromChatId,
                 'message_id' => $messageId,
@@ -122,7 +149,7 @@ class TelegramService
 
             return $response->json();
         } catch (\Exception $e) {
-            Log::error('Telegram copyMessage error: ' . $e->getMessage());
+            Log::error('Telegram forwardMessage error: ' . $e->getMessage());
             return ['ok' => false, 'error' => $e->getMessage()];
         }
     }
