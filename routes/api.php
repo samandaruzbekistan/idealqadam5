@@ -22,5 +22,8 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
 // Telegram Bot Webhook
 Route::post('/telegram/webhook', [TelegramController::class, 'webhook']);
 
+// Study Center Bot Webhook
+Route::post('/study-center/webhook', [App\Http\Controllers\StudyCenterController::class, 'webhook']);
+
 // Admin Export (protected route - you may want to add authentication)
 Route::get('/admin/export', [TelegramController::class, 'export'])->name('admin.export');

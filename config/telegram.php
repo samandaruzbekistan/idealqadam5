@@ -21,5 +21,15 @@ return [
     'youtube_link' => env('TELEGRAM_YOUTUBE_LINK', ''),
 
     'webhook_url' => env('TELEGRAM_WEBHOOK_URL'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Study Center Bot Configuration
+    |--------------------------------------------------------------------------
+    */
+
+    'study_center_bot_token' => env('TELEGRAM_STUDY_CENTER_BOT_TOKEN'),
+
+    'study_center_channel_username' => env('TELEGRAM_STUDY_CENTER_CHANNEL_USERNAME'),
 ];
 
