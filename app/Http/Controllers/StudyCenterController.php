@@ -305,6 +305,7 @@ class StudyCenterController extends Controller
     {
         $this->studyCenterService->updatePhone($registration, $phone);
 
+        // Send confirmation to user
         $message = "✅ Ro'yxatdan muvaffaqiyatli o'tdingiz!\n\n";
         $message .= "Ism: {$registration->full_name}\n";
         $message .= "Fanlar: {$registration->subjects}\n";
@@ -313,6 +314,33 @@ class StudyCenterController extends Controller
         $message .= "Ideal Study o'quv markazi";
 
         $this->sendMessage($registration->chat_id, $message);
+
+        // Send notification to admin
+        $this->notifyAdmin($registration);
+    }
+
+    /**
+     * Notify admin about new registration
+     */
+    private function notifyAdmin(StudyCenterRegistration $registration): void
+    {
+        $adminChatId = config('telegram.study_center_admin_chat_id');
+
+        if (!$adminChatId) {
+            Log::warning('Study Center admin chat ID not configured');
+            return;
+        }
+
+        // Format admin message
+        $adminMessage = "🆕 <b>Yangi abituryent ro'yxatdan o'tdi!</b>\n\n";
+        $adminMessage .= "👤 <b>Ism:</b> {$registration->full_name}\n";
+        $adminMessage .= "📚 <b>Fanlar:</b> {$registration->subjects}\n";
+        $adminMessage .= "📞 <b>Telefon:</b> {$registration->phone}\n";
+        $adminMessage .= "🆔 <b>Chat ID:</b> {$registration->chat_id}\n";
+        $adminMessage .= "📅 <b>Vaqt:</b> " . $registration->created_at->format('d.m.Y H:i') . "\n\n";
+        $adminMessage .= "Ideal Study o'quv markazi";
+
+        $this->sendMessage((int) $adminChatId, $adminMessage);
     }
 
     /**
