@@ -486,10 +486,14 @@ class TelegramController extends Controller
                 $this->handleExport($chatId);
                 break;
 
+            case '/stat':
+                $this->showStatistics($chatId);
+                break;
+
             default:
                 $this->telegramService->sendMessage(
                     $chatId,
-                    "Admin buyruqlari:\n/admin - Admin menyu\n/export - Excel fayl yuklab olish\n/broadcast [xabar] - Obunachilarga xabar yuborish"
+                    "Admin buyruqlari:\n/admin - Admin menyu\n/stat - Statistika\n/export - Excel fayl yuklab olish\n/broadcast [xabar] - Obunachilarga xabar yuborish"
                 );
         }
     }
@@ -506,8 +510,103 @@ class TelegramController extends Controller
         $message .= "Jami ro'yxatdan o'tganlar: {$totalRegistrations}\n";
         $message .= "Kutilayotganlar: {$pendingRegistrations}\n\n";
         $message .= "Buyruqlar:\n";
+        $message .= "/stat - To'liq statistika\n";
         $message .= "/export - Excel fayl yuklab olish\n";
         $message .= "/broadcast [xabar] - Obunachilarga xabar yuborish";
+
+        $this->telegramService->sendMessage($chatId, $message);
+    }
+
+    /**
+     * Show detailed statistics
+     */
+    private function showStatistics(int $chatId): void
+    {
+        $registrations = Registration::where('is_subscribed', true)
+            ->whereNotNull('grade')
+            ->get();
+
+        $total = $registrations->count();
+
+        if ($total === 0) {
+            $this->telegramService->sendMessage(
+                $chatId,
+                "📊 <b>Statistika</b>\n\nHozircha ro'yxatdan o'tganlar yo'q."
+            );
+            return;
+        }
+
+        // Statistics by grade
+        $byGrade = $registrations->groupBy('grade')
+            ->map(fn($group) => $group->count())
+            ->sortKeys();
+
+        // Statistics by subject
+        $bySubject = [];
+        foreach ($registrations as $reg) {
+            if ($reg->subjects) {
+                // Handle comma-separated subjects (for grades 1-4)
+                $subjects = array_map('trim', explode(',', $reg->subjects));
+                foreach ($subjects as $subject) {
+                    if (!empty($subject)) {
+                        $bySubject[$subject] = ($bySubject[$subject] ?? 0) + 1;
+                    }
+                }
+            }
+        }
+        arsort($bySubject);
+
+        // Cross-tabulation: grade -> subject
+        $gradeSubjectMap = [];
+        foreach ($registrations as $reg) {
+            if ($reg->grade && $reg->subjects) {
+                $grade = $reg->grade;
+                $subjects = array_map('trim', explode(',', $reg->subjects));
+                foreach ($subjects as $subject) {
+                    if (!empty($subject)) {
+                        if (!isset($gradeSubjectMap[$grade])) {
+                            $gradeSubjectMap[$grade] = [];
+                        }
+                        $gradeSubjectMap[$grade][$subject] = ($gradeSubjectMap[$grade][$subject] ?? 0) + 1;
+                    }
+                }
+            }
+        }
+
+        // Build message
+        $message = "📊 <b>To'liq Statistika</b>\n\n";
+
+        // Total
+        $message .= "📈 <b>Jami ro'yxatdan o'tganlar:</b> {$total}\n\n";
+
+        // By grade
+        $message .= "🎓 <b>Sinf bo'yicha:</b>\n";
+        foreach ($byGrade as $grade => $count) {
+            $message .= "  {$grade}-sinf: {$count} ta\n";
+        }
+        $message .= "\n";
+
+        // By subject
+        if (!empty($bySubject)) {
+            $message .= "📚 <b>Fan bo'yicha:</b>\n";
+            foreach ($bySubject as $subject => $count) {
+                $message .= "  {$subject}: {$count} ta\n";
+            }
+            $message .= "\n";
+        }
+
+        // Cross-tabulation
+        if (!empty($gradeSubjectMap)) {
+            $message .= "📋 <b>Sinf va fan bo'yicha:</b>\n";
+            ksort($gradeSubjectMap);
+            foreach ($gradeSubjectMap as $grade => $subjects) {
+                $message .= "\n<b>{$grade}-sinf:</b>\n";
+                arsort($subjects);
+                foreach ($subjects as $subject => $count) {
+                    $message .= "  • {$subject}: {$count} ta\n";
+                }
+            }
+        }
 
         $this->telegramService->sendMessage($chatId, $message);
     }
