@@ -165,6 +165,10 @@ class StudyCenterController extends Controller
                     'text' => "Telegram kanalga o'tish",
                     'url' => "https://t.me/ideal_study_lc",
                 ],
+                [
+                    'text' => "Instagram",
+                    'url' => "https://www.instagram.com/ideal_study_uz",
+                ],
             ];
         }
 
